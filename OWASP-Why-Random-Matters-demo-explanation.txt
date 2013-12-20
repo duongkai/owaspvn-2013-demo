@@ -1,0 +1,125 @@
+21. Implement the MT19937 Mersenne Twister RNG
+Based on the pseudo-code on Wikipedia, i have my own code like this:
+class Random:
+    length = 624
+    mersenne = [0] * length
+    bit_mask_32 = 2 ** 32 - 1
+    
+    def __init__ (self, seed):
+        self.set (seed)
+
+    def set (self, seed):
+        self.index = 0
+        self.mersenne[0] = seed
+        for pi in range (1, self.length):
+            self.mersenne[pi] = (1812433253 * (self.mersenne[pi - 1] ^ \
+                (self.mersenne[pi - 1] >> 30)) + pi) & self.bit_mask_32
+
+    def get (self):
+        if self.index == 0:
+            self.seeding()
+        y = self.mersenne[self.index]
+        y ^= y >> 11
+        y ^= (y << 7) & 2636928640
+        y ^= (y << 15) & 4022730752
+        y ^= y >> 18
+        self.index = (self.index + 1) % self.length
+        return y, self.mersenne[self.index - 1], self.index - 1
+
+    def seeding (self):
+        for pi in range (0, self.length):
+            y = (self.mersenne[pi] & 0x80000000) + \
+                (self.mersenne[(pi + 1) % self.length] & 0x7fffffff)
+            self.mersenne[pi] = self.mersenne[(pi + 397) % self.length] ^ (y >> 1)
+            if y % 2 != 0:
+                self.mersenne[pi] = self.mersenne[pi] ^ 2567483615
+
+22. "Crack" An MT19937 Seed
+Here is the generator:
+while (1):
+    sleep_time = randint (40, 1000)
+    print "sleeping in (s): {0} @time = {1}".format (sleep_time, time())
+    sleep (sleep_time)
+    random_coin.set (int (time()))
+    print "re-sleeping in (s): {0} @time = {1}".format (sleep_time, time())
+    sleep (sleep_time)
+    a = random_coin.get()
+    print "result = {0}".format (a)
+
+The attack is quite easy, I got the current time then I came backward from this moment to past. Each moment, I initialised a new Random engine with the timestamp as a seeder. I took the first value of the engine and compared. If equaled, found out!
+print "Started bruteforcing MT19937..."
+counter = int (time())
+while (1):
+    first = Random (counter).get()
+    if first == int (argv[1]):
+        print "OUT! Seeder = {0}".format (counter)
+        break
+    counter -= 1
+
+23. Clone An MT19937 RNG From Its Output
+Firstly, this problem made me confused and I thought more complex than the reality. But after doing some math, it’s quite easy.
+In order to reverse the state, I must solve two equations: a = x ^ (x >> b) & c and a = x ^ (x << b) with a, b, c are given.
+# a = x ^ (x << b) & c <=> x = [(x << b) & c] ^ a <=> x = (x1 & c) ^ a <=> x = x2 ^ a
+# brute the value of last b-bits of x
+def solve32bit (a, b, c):
+    x = 0
+    while (1):
+        bin_x = bin(x)[2:]
+        x1 = int (bin_x + '0' * b, 2)
+        x2 = x1 & c
+        tmp_x = (x2 ^ a) & 0xffffffff
+        bin_tmp_x = bin(tmp_x)[2:]
+        if bin_tmp_x[-len (bin_x):] == bin_x:
+            if ((tmp_x << b) & c) ^ tmp_x == a:
+                return tmp_x
+        x += 1
+        if x == 2 ** (32 - b) - 1:
+            print ("Arrived in. Break!")
+            break
+
+# a = x ^ (x >> b) <=> a = x ^ x1 <=> x = a ^ x1
+# brute the value of x1
+def solve_xor(a, b):
+    x1 = 1
+    while (1):
+        tmp_x = a ^ x1
+        if (tmp_x >> b) ^ tmp_x == a:
+            return tmp_x
+        x1 += 1
+
+And the reverse state function is:
+def reverse_state (rnd):
+    y = solve_xor (rnd, 18)
+    y = solve32bit (y, 15, 0xefc60000)
+    y = solve32bit (y, 7, 0x9d2c5680)
+    y = solve_xor (y, 11)
+    return y
+
+That’s all! But the run-time is quite long (some hrs to solve first 624 states of MT19937)
+
+24. Create the MT19937 Stream Cipher And Break It
+It’s easy because I know a sub string of a plaintext (14 * ‘A’)
+def xor_encryption():
+    keystream = Random (8000)
+    ciphertext = ''.join ([chr (ord (pi) ^ (keystream.get() & 0xff)) for pi in PLAIN_TEXT])
+    return hexlify (bytes (ciphertext, 'utf-8'))
+
+def keystream (seed, length):
+    generator = Random (seed)
+    return [generator.get() & 0xff for pi in range (0, length)]
+
+def xor (text, keystream):
+    return ''.join ([chr (ord (text[pi]) ^ keystream[pi]) for pi in range (0, len (text))])
+
+def xor_cryptanalysis (ciphertext):
+    seed = 0
+    ciphers = unhexlify (ciphertext).decode ('utf-8')
+    length = len (ciphers)
+    while (1):
+        print (seed)
+        key = keystream (seed, length)
+        text = xor (ciphers, key)
+        if text[-14:] == 'A' * 14:
+            print ('We found you, the seed', seed)
+            break
+        seed += 1
